@@ -10,6 +10,7 @@ from PIL import Image
 # [1] arXiv:1502.04681 - Unsupervised Learning of Video Representations Using LSTMs
 #     Srivastava et al
 # by James Chan
+# forked from tencia/moving_mnist.py
 # saves in hdf5, npz, or jpg (individual frames) format
 ###########################################################################################
 
