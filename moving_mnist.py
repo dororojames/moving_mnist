@@ -1,5 +1,6 @@
-import math
 import os
+import random
+import shutil
 import sys
 
 import numpy as np
@@ -62,84 +63,99 @@ def load_dataset():
 def generate_moving_mnist(shape=(64, 64), seq_len=30, seqs=10000, num_sz=28, nums_per_image=2):
     mnist = load_dataset()
     width, height = shape
-    lims = (x_lim, y_lim) = width-num_sz, height-num_sz
-    l2 = np.array([x_lim, y_lim])
+    lims = np.array([width-num_sz, height-num_sz])
     dataset = np.empty((seq_len*seqs, 1, width, height), dtype=np.uint8)
     for seq_idx in range(seqs):
         # randomly generate direc/speed/position, calculate velocity vector
         direcs = np.pi * (np.random.rand(nums_per_image)*2 - 1)
         speeds = np.random.randint(5, size=nums_per_image)+2
-        veloc = [(v*math.cos(d), v*math.sin(d))
-                 for d, v in zip(direcs, speeds)]
-        v2 = np.array([np.cos(direcs), np.sin(direcs)]).T * speeds
-        print(veloc, v2)
+        veloc = np.multiply(
+            np.array([np.cos(direcs), np.sin(direcs)]), speeds).T
         mnist_images = [Image.fromarray(get_picture_array(mnist, r, shift=0)).resize((num_sz, num_sz), Image.ANTIALIAS)
                         for r in np.random.randint(0, mnist.shape[0], nums_per_image)]
-        positions = [(np.random.rand()*x_lim, np.random.rand()*y_lim)
-                     for _ in range(nums_per_image)]
-        p2 = np.random.uniform(size=(2, 2))
-        print(p2, l2, p2*l2)
+        position = np.random.uniform(size=(nums_per_image, 2)) * lims
         for frame_idx in range(seq_len):
             canvases = [Image.new('L', (width, height))
                         for _ in range(nums_per_image)]
             canvas = np.zeros((1, width, height), dtype=np.float32)
             for i, canv in enumerate(canvases):
-                canv.paste(mnist_images[i], tuple(
-                    map(lambda p: int(round(p)), positions[i])))
+                canv.paste(mnist_images[i], tuple(position[i].astype(int)))
                 canvas += arr_from_img(canv, shift=0)
-            # update positions based on velocity
-            next_pos = [tuple(map(sum, zip(p, v)))
-                        for p, v in zip(positions, veloc)]
             # bounce off wall if a we hit one
-            for i, pos in enumerate(next_pos):
-                for j, coord in enumerate(pos):
-                    if coord < -2 or coord > lims[j]+2:
-                        veloc[i] = tuple(
-                            list(veloc[i][:j]) + [-1 * veloc[i][j]] + list(veloc[i][j+1:]))
-            positions = [tuple(map(sum, zip(p, v)))
-                         for p, v in zip(positions, veloc)]
+            for i in range(nums_per_image):
+                for j in range(2):
+                    newp = position[i][j]+veloc[i][j]
+                    if newp < -2 or newp > lims[j]+2:
+                        veloc[i][j] *= -1
+            position += veloc
             # copy additive canvas to data array
             dataset[seq_idx*seq_len +
                     frame_idx] = (canvas * 255).astype(np.uint8).clip(0, 255)
+        if (seq_idx+1) % (seqs//10) == 0:
+            print(((seq_idx+1) * 100 // seqs), "%")
     return dataset
 
 
 def main(dest=None, filetype='jpg', frame_size=64, seq_len=10, seqs=10, num_sz=28, nums_per_image=2):
     dat = generate_moving_mnist(shape=(frame_size, frame_size), seq_len=seq_len, seqs=seqs,
                                 num_sz=num_sz, nums_per_image=nums_per_image)
-    dest = _PATH+dest if dest != None else _PATH+"dataset/"
-    if not os.path.isdir(dest):
-        os.mkdir(dest)
-    n = seqs * seq_len
-    if filetype == 'hdf5':
-        import h5py
-        from fuel.datasets.hdf5 import H5PYDataset
-
-        def save_hd5py(dataset, destfile, indices_dict):
-            f = h5py.File(destfile, mode='w')
-            images = f.create_dataset('images', dataset.shape, dtype='uint8')
-            images[...] = dataset
-            split_dict = dict((k, {'images': v})
-                              for k, v in indices_dict.iteritems())
-            f.attrs['split'] = H5PYDataset.create_split_array(split_dict)
-            f.flush()
-            f.close()
-        indices_dict = {'train': (0, n*9/10), 'test': (n*9/10, n)}
-        save_hd5py(dat, dest, indices_dict)
-    elif filetype == 'npz':
-        np.savez(dest, dat)
+    dest = _PATH + (dest if dest !=
+                    None else "dataset/" if filetype == "jpg" else "data")
+    print("Saving...", end="")
+    if filetype == 'np':
+        np.save(dest+str(seqs)+".npy", dat)
     elif filetype == 'jpg':
+        shutil.rmtree(dest)
+        os.mkdir(dest)
         for i in range(seqs):
-            vdir = dest+"v{}/".format(i)
-            if not os.path.isdir(vdir):
-                os.mkdir(vdir)
-            else:
-                for f in os.listdir(vdir):
-                    os.remove(vdir+f)
+            vdir = dest+"/v{}/".format(i)
+            os.mkdir(vdir)
             for j in range(seq_len):
                 Image.fromarray(get_picture_array(
-                    dat, i*seq_len+j, shift=0)).save(vdir+'{}.jpg'.format(j))
+                    dat, i*seq_len+j, shift=0)).save(vdir + "{}.jpg".format(j))
+    else:
+        raise TypeError("Filetype Error")
+    print("Done")
+
+
+def split_train_test(inputframes=10, predframes=10, testrate=10,  datadir=_PATH+"dataset/"):
+    if not os.path.isdir(datadir):
+        raise FileNotFoundError("Data Floder not exist")
+    vdirs = sorted(os.listdir(datadir))
+    video_len = len(vdirs)
+    if video_len == 0:
+        raise FileNotFoundError("No video in the {}".format(datadir))
+    data = []
+    frames = len(os.listdir(datadir+vdirs[0]))
+    print("Input {} frames, pred {} frames".format(inputframes, predframes))
+    if frames-inputframes-predframes < 0:
+        raise ValueError(
+            "inputframes+predframes out of range(Expected less then {})".format(frames))
+    # combine imgs
+    for vid in range(video_len):
+        for i in range(frames-inputframes-predframes+1):
+            im = "v{}_{}_{}".format(vid, i, i+inputframes)
+            la = "v{}_{}_{}".format(
+                vid, i+inputframes, i+inputframes+predframes)
+            data.append([im, la])
+    random.shuffle(data)
+    datasize = len(data)
+    print("Data size: {}".format(datasize))
+    # save csv
+    split_point = datasize * (100-testrate)//100
+    with open(_PATH+"train_img.csv", "w") as train_img:
+        with open(_PATH+"train_label.csv", "w") as train_label:
+            for d in data[:split_point]:
+                train_img.write(d[0]+"\n")
+                train_label.write(d[1]+"\n")
+    with open(_PATH+"test_img.csv", "w") as test_img:
+        with open(_PATH+"test_label.csv", "w") as test_label:
+            for d in data[split_point:]:
+                test_img.write(d[0]+"\n")
+                test_label.write(d[1]+"\n")
+    print("Saved dataindex")
 
 
 if __name__ == '__main__':
-    main(seq_len=20, seqs=20)
+    main(filetype="jpg", seq_len=24, seqs=100)
+    split_train_test(testrate=20, predframes=10)
